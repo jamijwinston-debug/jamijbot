@@ -4,6 +4,7 @@ import threading
 import datetime
 import random
 import time
+import asyncio
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes
 from telegram.error import TelegramError
@@ -18,9 +19,8 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Store active groups and user responses
+# Store active groups
 active_groups = set()
-user_responses = {}
 
 # Define the links and their messages
 LINKS = [
@@ -68,10 +68,9 @@ async def send_daily_message(chat_id, bot):
         # Select a random link for today
         link_data = random.choice(LINKS)
         
-        # Create keyboard with action button
+        # Create keyboard with action button only (removed the "Yes, I've taken action" button)
         keyboard = [
-            [InlineKeyboardButton(link_data["button_text"], url=link_data["url"])],
-            [InlineKeyboardButton("Yes, I've taken action! ✅", callback_data="action_taken")]
+            [InlineKeyboardButton(link_data["button_text"], url=link_data["url"])]
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
         
@@ -96,12 +95,12 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Send a message when the command /start is issued."""
     user = update.effective_user
     await update.message.reply_text(
-        f"Hi {user.first_name}! I'm your auto-posting bot. Add me to any group and I'll send daily messages!"
+        f"Hi {user.first_name}! I'm Jami, your auto-posting bot. Add me to any group and I'll send daily messages!"
     )
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Send a message when the command /help is issued."""
-    await update.message.reply_text("I'm a bot that sends daily messages to groups! Add me to any group to get started.")
+    await update.message.reply_text("I'm Jami, a bot that sends daily messages to groups! Add me to any group to get started.")
 
 async def new_chat_members(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle new chat members (when bot is added to a group)."""
@@ -114,7 +113,7 @@ async def new_chat_members(update: Update, context: ContextTypes.DEFAULT_TYPE):
             
             # Send welcome message
             await update.message.reply_text(
-                "Hello everyone! 👋 I'm your daily message bot. "
+                "Hello everyone! 👋 I'm Jami, your daily message bot. "
                 "I'll post inspirational messages every day at 10:00 AM. "
                 "Use /daily to get a message right now!"
             )
@@ -131,16 +130,6 @@ async def daily_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Send a daily message on command."""
     chat_id = update.effective_chat.id
     await send_daily_message(chat_id, context.bot)
-
-async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle button callbacks"""
-    query = update.callback_query
-    await query.answer()
-    
-    if query.data == "action_taken":
-        user_id = query.from_user.id
-        user_responses[user_id] = True
-        await query.edit_message_text(text=f"Thank you {query.from_user.first_name} for taking action! 🙌")
 
 async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Log errors caused by Updates."""
@@ -170,8 +159,9 @@ def run_scheduler(application):
         await send_scheduled_messages(application.bot)
     
     # Run the scheduler in the event loop
-    loop = application._get_running_loop()
-    asyncio.run_coroutine_threadsafe(scheduler_task(), loop)
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    loop.run_until_complete(scheduler_task())
 
 def main():
     """Start the bot."""
@@ -184,7 +174,6 @@ def main():
     application.add_handler(CommandHandler("daily", daily_command))
     application.add_handler(MessageHandler(filters.StatusUpdate.NEW_CHAT_MEMBERS, new_chat_members))
     application.add_handler(MessageHandler(filters.StatusUpdate.LEFT_CHAT_MEMBER, left_chat_member))
-    application.add_handler(CallbackQueryHandler(button_handler))
     
     # Add error handler
     application.add_error_handler(error_handler)
@@ -198,5 +187,4 @@ def main():
     application.run_polling()
 
 if __name__ == '__main__':
-    import asyncio
     main()
