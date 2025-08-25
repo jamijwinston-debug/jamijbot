@@ -1,23 +1,16 @@
 import os
 import logging
 import asyncio
-from telegram import Update, Bot, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, filters
+import threading
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import Updater, CommandHandler, CallbackQueryHandler, MessageHandler, Filters, CallbackContext
 from telegram.error import TelegramError
 import datetime
 import random
-from flask import Flask, request
-import threading
 import time
-
-# Load environment variables
-from dotenv import load_dotenv
-load_dotenv()
 
 # Bot configuration
 BOT_TOKEN = os.getenv('BOT_TOKEN', '8242530682:AAEIrKAuv1OipAwQjgyNHw-d4F1SrGnCGFI')
-WEBHOOK_URL = os.getenv('WEBHOOK_URL', '')  # Set this in Render.com dashboard
-PORT = int(os.environ.get('PORT', 5000))
 
 # Enable logging
 logging.basicConfig(
@@ -25,9 +18,6 @@ logging.basicConfig(
     level=logging.INFO
 )
 logger = logging.getLogger(__name__)
-
-# Initialize Flask app
-app = Flask(__name__)
 
 # Store active groups and user responses
 active_groups = set()
@@ -70,7 +60,7 @@ def get_time_based_greeting():
     else:
         return "Good night"
 
-async def send_daily_message(chat_id, context):
+def send_daily_message(chat_id, context):
     """Send the daily message with a greeting and promotional content"""
     try:
         # Get appropriate greeting
@@ -90,7 +80,7 @@ async def send_daily_message(chat_id, context):
         full_message = f"{greeting} everyone! 👋\n\nHow are you all doing today?\n\n{link_data['message']}"
         
         # Send the message
-        await context.bot.send_message(
+        context.bot.send_message(
             chat_id=chat_id,
             text=full_message,
             reply_markup=reply_markup,
@@ -103,18 +93,18 @@ async def send_daily_message(chat_id, context):
     except Exception as e:
         logger.error(f"Unexpected error: {e}")
 
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+def start(update: Update, context: CallbackContext):
     """Send a message when the command /start is issued."""
     user = update.effective_user
-    await update.message.reply_html(
-        rf"Hi {user.mention_html()}! I'm your auto-posting bot. Add me to any group and I'll send daily motivational messages!",
+    update.message.reply_text(
+        f"Hi {user.first_name}! I'm your auto-posting bot. Add me to any group and I'll send daily messages!"
     )
 
-async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+def help_command(update: Update, context: CallbackContext):
     """Send a message when the command /help is issued."""
-    await update.message.reply_text("I'm a bot that sends daily messages to groups! Add me to any group to get started.")
+    update.message.reply_text("I'm a bot that sends daily messages to groups! Add me to any group to get started.")
 
-async def new_chat_members(update: Update, context: ContextTypes.DEFAULT_TYPE):
+def new_chat_members(update: Update, context: CallbackContext):
     """Handle new chat members (when bot is added to a group)."""
     for member in update.message.new_chat_members:
         if member.id == context.bot.id:
@@ -124,13 +114,13 @@ async def new_chat_members(update: Update, context: ContextTypes.DEFAULT_TYPE):
             logger.info(f"Bot added to group: {chat_id}")
             
             # Send welcome message
-            await update.message.reply_text(
+            update.message.reply_text(
                 "Hello everyone! 👋 I'm your daily message bot. "
-                "I'll post inspirational messages every day. "
+                "I'll post inspirational messages every day at 10:00 AM. "
                 "Use /daily to get a message right now!"
             )
 
-async def left_chat_member(update: Update, context: ContextTypes.DEFAULT_TYPE):
+def left_chat_member(update: Update, context: CallbackContext):
     """Handle when bot is removed from a group."""
     if update.message.left_chat_member.id == context.bot.id:
         chat_id = update.effective_chat.id
@@ -138,117 +128,80 @@ async def left_chat_member(update: Update, context: ContextTypes.DEFAULT_TYPE):
             active_groups.remove(chat_id)
             logger.info(f"Bot removed from group: {chat_id}")
 
-async def daily_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+def daily_command(update: Update, context: CallbackContext):
     """Send a daily message on command."""
     chat_id = update.effective_chat.id
-    await send_daily_message(chat_id, context)
+    send_daily_message(chat_id, context)
 
-async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+def button_handler(update: Update, context: CallbackContext):
     """Handle button callbacks"""
     query = update.callback_query
-    await query.answer()
+    query.answer()
     
     if query.data == "action_taken":
         user_id = query.from_user.id
         user_responses[user_id] = True
-        await query.edit_message_text(text=f"Thank you {query.from_user.first_name} for taking action! 🙌")
-    else:
-        await query.edit_message_text(text="Thank you for your interest! 💖")
+        query.edit_message_text(text=f"Thank you {query.from_user.first_name} for taking action! 🙌")
 
-async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+def error_handler(update: Update, context: CallbackContext):
     """Log errors caused by Updates."""
     logger.error(f"Exception while handling an update: {context.error}")
 
-def run_daily_messages(application):
-    """Run the daily messages in the background"""
-    async def send_all_daily_messages():
-        while True:
-            try:
-                # Send to all active groups at 10:00 AM server time
-                now = datetime.datetime.now()
-                if now.hour == 10 and now.minute == 0:
-                    for chat_id in list(active_groups):
-                        await send_daily_message(chat_id, context=ContextTypes.DEFAULT_TYPE(application=application))
-                    # Wait 1 hour to avoid sending multiple times
-                    await asyncio.sleep(3600)
-                else:
-                    # Check every minute
-                    await asyncio.sleep(60)
-            except Exception as e:
-                logger.error(f"Error in daily message loop: {e}")
-                await asyncio.sleep(60)
-    
-    # Run the background task
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-    loop.run_until_complete(send_all_daily_messages())
-
-@app.route('/')
-def index():
-    return "Telegram Bot is running!"
-
-@app.route('/webhook', methods=['POST'])
-def webhook():
-    """Webhook endpoint for Telegram"""
-    update = Update.de_json(request.get_json(), bot)
-    asyncio.run(process_update(application, update))
-    return 'OK'
-
-async def process_update(app, update):
-    """Process update with the application"""
-    await app.process_update(update)
+def send_scheduled_messages():
+    """Send scheduled messages to all active groups"""
+    while True:
+        try:
+            now = datetime.datetime.now()
+            # Send at 10:00 AM every day
+            if now.hour == 10 and now.minute == 0:
+                for chat_id in list(active_groups):
+                    # Create a minimal context for sending messages
+                    class MinimalContext:
+                        def __init__(self, bot):
+                            self.bot = bot
+                    
+                    context = MinimalContext(updater.bot)
+                    send_daily_message(chat_id, context)
+                # Wait 1 hour to avoid sending multiple times
+                time.sleep(3600)
+            else:
+                # Check every minute
+                time.sleep(60)
+        except Exception as e:
+            logger.error(f"Error in scheduled messages: {e}")
+            time.sleep(60)
 
 def main():
     """Start the bot."""
-    global application, bot
+    global updater
     
-    # Create the Application
-    application = Application.builder().token(BOT_TOKEN).build()
+    # Create the Updater
+    updater = Updater(BOT_TOKEN, use_context=True)
+    
+    # Get the dispatcher to register handlers
+    dp = updater.dispatcher
 
     # Add handlers
-    application.add_handler(CommandHandler("start", start))
-    application.add_handler(CommandHandler("help", help_command))
-    application.add_handler(CommandHandler("daily", daily_command))
-    application.add_handler(MessageHandler(filters.StatusUpdate.NEW_CHAT_MEMBERS, new_chat_members))
-    application.add_handler(MessageHandler(filters.StatusUpdate.LEFT_CHAT_MEMBER, left_chat_member))
-    application.add_handler(CallbackQueryHandler(button_handler))
+    dp.add_handler(CommandHandler("start", start))
+    dp.add_handler(CommandHandler("help", help_command))
+    dp.add_handler(CommandHandler("daily", daily_command))
+    dp.add_handler(MessageHandler(Filters.status_update.new_chat_members, new_chat_members))
+    dp.add_handler(MessageHandler(Filters.status_update.left_chat_member, left_chat_member))
+    dp.add_handler(CallbackQueryHandler(button_handler))
     
     # Add error handler
-    application.add_error_handler(error_handler)
+    dp.add_error_handler(error_handler)
 
-    # Initialize bot
-    bot = application.bot
-    
-    # Set webhook if WEBHOOK_URL is provided
-    if WEBHOOK_URL:
-        # Run webhook in a separate thread
-        def run_webhook():
-            application.run_webhook(
-                listen="0.0.0.0",
-                port=PORT,
-                url_path=BOT_TOKEN,
-                webhook_url=f"{WEBHOOK_URL}/{BOT_TOKEN}"
-            )
-        
-        webhook_thread = threading.Thread(target=run_webhook)
-        webhook_thread.daemon = True
-        webhook_thread.start()
-    else:
-        # Run polling in a separate thread
-        def run_polling():
-            application.run_polling()
-        
-        polling_thread = threading.Thread(target=run_polling)
-        polling_thread.daemon = True
-        polling_thread.start()
-    
-    # Start daily message scheduler in background
-    scheduler_thread = threading.Thread(target=run_daily_messages, args=(application,))
+    # Start the scheduled messages in a separate thread
+    scheduler_thread = threading.Thread(target=send_scheduled_messages)
     scheduler_thread.daemon = True
     scheduler_thread.start()
+
+    # Start the Bot
+    updater.start_polling()
     
-    # Run Flask app
-    app.run(host='0.0.0.0', port=PORT, debug=False, use_reloader=False)
+    # Run the bot until you press Ctrl-C
+    updater.idle()
 
 if __name__ == '__main__':
     main()
