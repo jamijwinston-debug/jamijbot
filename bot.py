@@ -2,7 +2,7 @@ import os
 import logging
 import asyncio
 from telegram import Bot, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.error import TelegramError
+from telegram.error import TelegramError, BadRequest
 import datetime
 import schedule
 import time
@@ -12,7 +12,7 @@ from dotenv import load_dotenv
 # Load environment variables
 load_dotenv()
 
-# Bot configuration from environment variables (set these in Render.com dashboard)
+# Bot configuration from environment variables
 BOT_TOKEN = os.getenv('BOT_TOKEN', '8242530682:AAEIrKAuv1OipAwQjgyNHw-d4F1SrGnCGFI')
 CHAT_ID = os.getenv('CHAT_ID', '1002796725293')
 
@@ -26,7 +26,7 @@ logger = logging.getLogger(__name__)
 # Initialize bot
 bot = Bot(token=BOT_TOKEN)
 
-# Store user responses (in a real application, use a database)
+# Store user responses
 user_responses = {}
 
 # Define the links and their messages
@@ -94,10 +94,44 @@ async def send_daily_message():
         )
         logger.info("Daily message sent successfully")
         
+    except BadRequest as e:
+        if "Chat not found" in str(e):
+            logger.error(f"Chat not found. Please make sure:")
+            logger.error(f"1. The bot is added to the chat/channel")
+            logger.error(f"2. The chat ID '{CHAT_ID}' is correct")
+            logger.error(f"3. The bot has permission to send messages")
+        else:
+            logger.error(f"BadRequest error: {e}")
     except TelegramError as e:
-        logger.error(f"Error sending message: {e}")
+        logger.error(f"Telegram error: {e}")
     except Exception as e:
         logger.error(f"Unexpected error: {e}")
+
+async def check_bot_health():
+    """Check if bot can access Telegram API"""
+    try:
+        me = await bot.get_me()
+        logger.info(f"Bot is working: @{me.username}")
+        return True
+    except Exception as e:
+        logger.error(f"Bot health check failed: {e}")
+        return False
+
+async def test_chat_access():
+    """Test if bot can access the chat"""
+    try:
+        chat = await bot.get_chat(chat_id=CHAT_ID)
+        logger.info(f"Chat access successful: {chat.title if hasattr(chat, 'title') else 'Private chat'}")
+        return True
+    except BadRequest as e:
+        if "Chat not found" in str(e):
+            logger.error("Chat not found. The bot needs to be added to the chat first.")
+        else:
+            logger.error(f"Chat access error: {e}")
+        return False
+    except Exception as e:
+        logger.error(f"Unexpected chat access error: {e}")
+        return False
 
 async def check_engagement():
     """Check how many users have taken action"""
@@ -114,6 +148,19 @@ def run_scheduled_tasks():
     """Run the scheduled tasks in the asyncio event loop"""
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
+    
+    # First check if bot can connect
+    health_ok = loop.run_until_complete(check_bot_health())
+    if not health_ok:
+        logger.error("Bot health check failed. Check your BOT_TOKEN.")
+        return
+    
+    # Check if bot can access the chat
+    chat_ok = loop.run_until_complete(test_chat_access())
+    if not chat_ok:
+        logger.error("Chat access failed. The bot needs to be added to the chat first.")
+        logger.error("Make sure the bot is added as an administrator with send message permissions.")
+        return
     
     # Schedule messages
     schedule.every().day.at("10:00").do(lambda: loop.run_until_complete(send_daily_message()))
