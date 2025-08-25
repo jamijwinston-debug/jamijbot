@@ -1,13 +1,12 @@
 import os
 import logging
-import asyncio
 import threading
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import Updater, CommandHandler, CallbackQueryHandler, MessageHandler, Filters, CallbackContext
-from telegram.error import TelegramError
 import datetime
 import random
 import time
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes
+from telegram.error import TelegramError
 
 # Bot configuration
 BOT_TOKEN = os.getenv('BOT_TOKEN', '8242530682:AAEIrKAuv1OipAwQjgyNHw-d4F1SrGnCGFI')
@@ -60,7 +59,7 @@ def get_time_based_greeting():
     else:
         return "Good night"
 
-def send_daily_message(chat_id, context):
+async def send_daily_message(chat_id, bot):
     """Send the daily message with a greeting and promotional content"""
     try:
         # Get appropriate greeting
@@ -80,7 +79,7 @@ def send_daily_message(chat_id, context):
         full_message = f"{greeting} everyone! 👋\n\nHow are you all doing today?\n\n{link_data['message']}"
         
         # Send the message
-        context.bot.send_message(
+        await bot.send_message(
             chat_id=chat_id,
             text=full_message,
             reply_markup=reply_markup,
@@ -93,18 +92,18 @@ def send_daily_message(chat_id, context):
     except Exception as e:
         logger.error(f"Unexpected error: {e}")
 
-def start(update: Update, context: CallbackContext):
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Send a message when the command /start is issued."""
     user = update.effective_user
-    update.message.reply_text(
+    await update.message.reply_text(
         f"Hi {user.first_name}! I'm your auto-posting bot. Add me to any group and I'll send daily messages!"
     )
 
-def help_command(update: Update, context: CallbackContext):
+async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Send a message when the command /help is issued."""
-    update.message.reply_text("I'm a bot that sends daily messages to groups! Add me to any group to get started.")
+    await update.message.reply_text("I'm a bot that sends daily messages to groups! Add me to any group to get started.")
 
-def new_chat_members(update: Update, context: CallbackContext):
+async def new_chat_members(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle new chat members (when bot is added to a group)."""
     for member in update.message.new_chat_members:
         if member.id == context.bot.id:
@@ -114,13 +113,13 @@ def new_chat_members(update: Update, context: CallbackContext):
             logger.info(f"Bot added to group: {chat_id}")
             
             # Send welcome message
-            update.message.reply_text(
+            await update.message.reply_text(
                 "Hello everyone! 👋 I'm your daily message bot. "
                 "I'll post inspirational messages every day at 10:00 AM. "
                 "Use /daily to get a message right now!"
             )
 
-def left_chat_member(update: Update, context: CallbackContext):
+async def left_chat_member(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle when bot is removed from a group."""
     if update.message.left_chat_member.id == context.bot.id:
         chat_id = update.effective_chat.id
@@ -128,26 +127,26 @@ def left_chat_member(update: Update, context: CallbackContext):
             active_groups.remove(chat_id)
             logger.info(f"Bot removed from group: {chat_id}")
 
-def daily_command(update: Update, context: CallbackContext):
+async def daily_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Send a daily message on command."""
     chat_id = update.effective_chat.id
-    send_daily_message(chat_id, context)
+    await send_daily_message(chat_id, context.bot)
 
-def button_handler(update: Update, context: CallbackContext):
+async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle button callbacks"""
     query = update.callback_query
-    query.answer()
+    await query.answer()
     
     if query.data == "action_taken":
         user_id = query.from_user.id
         user_responses[user_id] = True
-        query.edit_message_text(text=f"Thank you {query.from_user.first_name} for taking action! 🙌")
+        await query.edit_message_text(text=f"Thank you {query.from_user.first_name} for taking action! 🙌")
 
-def error_handler(update: Update, context: CallbackContext):
+async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Log errors caused by Updates."""
     logger.error(f"Exception while handling an update: {context.error}")
 
-def send_scheduled_messages():
+async def send_scheduled_messages(bot):
     """Send scheduled messages to all active groups"""
     while True:
         try:
@@ -155,53 +154,49 @@ def send_scheduled_messages():
             # Send at 10:00 AM every day
             if now.hour == 10 and now.minute == 0:
                 for chat_id in list(active_groups):
-                    # Create a minimal context for sending messages
-                    class MinimalContext:
-                        def __init__(self, bot):
-                            self.bot = bot
-                    
-                    context = MinimalContext(updater.bot)
-                    send_daily_message(chat_id, context)
+                    await send_daily_message(chat_id, bot)
                 # Wait 1 hour to avoid sending multiple times
-                time.sleep(3600)
+                await asyncio.sleep(3600)
             else:
                 # Check every minute
-                time.sleep(60)
+                await asyncio.sleep(60)
         except Exception as e:
             logger.error(f"Error in scheduled messages: {e}")
-            time.sleep(60)
+            await asyncio.sleep(60)
+
+def run_scheduler(application):
+    """Run the scheduler in a separate thread"""
+    async def scheduler_task():
+        await send_scheduled_messages(application.bot)
+    
+    # Run the scheduler in the event loop
+    loop = application._get_running_loop()
+    asyncio.run_coroutine_threadsafe(scheduler_task(), loop)
 
 def main():
     """Start the bot."""
-    global updater
-    
-    # Create the Updater
-    updater = Updater(BOT_TOKEN, use_context=True)
-    
-    # Get the dispatcher to register handlers
-    dp = updater.dispatcher
+    # Create the Application
+    application = Application.builder().token(BOT_TOKEN).build()
 
     # Add handlers
-    dp.add_handler(CommandHandler("start", start))
-    dp.add_handler(CommandHandler("help", help_command))
-    dp.add_handler(CommandHandler("daily", daily_command))
-    dp.add_handler(MessageHandler(Filters.status_update.new_chat_members, new_chat_members))
-    dp.add_handler(MessageHandler(Filters.status_update.left_chat_member, left_chat_member))
-    dp.add_handler(CallbackQueryHandler(button_handler))
+    application.add_handler(CommandHandler("start", start))
+    application.add_handler(CommandHandler("help", help_command))
+    application.add_handler(CommandHandler("daily", daily_command))
+    application.add_handler(MessageHandler(filters.StatusUpdate.NEW_CHAT_MEMBERS, new_chat_members))
+    application.add_handler(MessageHandler(filters.StatusUpdate.LEFT_CHAT_MEMBER, left_chat_member))
+    application.add_handler(CallbackQueryHandler(button_handler))
     
     # Add error handler
-    dp.add_error_handler(error_handler)
+    application.add_error_handler(error_handler)
 
-    # Start the scheduled messages in a separate thread
-    scheduler_thread = threading.Thread(target=send_scheduled_messages)
+    # Start the scheduler in a separate thread
+    scheduler_thread = threading.Thread(target=run_scheduler, args=(application,))
     scheduler_thread.daemon = True
     scheduler_thread.start()
 
     # Start the Bot
-    updater.start_polling()
-    
-    # Run the bot until you press Ctrl-C
-    updater.idle()
+    application.run_polling()
 
 if __name__ == '__main__':
+    import asyncio
     main()
